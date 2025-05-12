@@ -1,82 +1,166 @@
 import streamlit as st
 import pandas as pd
-import joblib
 import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pickle
+import os
 
-# Load model dan encoder
-model = joblib.load("customer_segmentation_model.pkl")
-label_encoder = joblib.load("label_encoder.pkl")
+# Set page config
+st.set_page_config(page_title="Customer Segmentation", layout="wide")
 
-st.set_page_config(page_title="Customer Segmentation Predictor", layout="wide")
-st.title("🔍 Customer Segmentation Prediction App")
+# Title
+st.title("Customer Segmentation Analysis")
 
-# Sidebar menu
-menu = st.sidebar.selectbox("Pilih Mode", ["Upload File", "Input Manual"])
+# Sidebar for file uploads and parameters
+with st.sidebar:
+    st.header("Upload Data")
+    train_file = st.file_uploader("Upload Train CSV", type=["csv"])
+    test_file = st.file_uploader("Upload Test CSV", type=["csv"])
+    
+    st.header("Model Parameters")
+    n_clusters = st.slider("Number of Clusters", min_value=2, max_value=10, value=4)
+    random_state = st.number_input("Random State", min_value=0, value=42)
+    
+    st.header("Options")
+    save_model = st.checkbox("Save Model", value=True)
+    show_raw_data = st.checkbox("Show Raw Data", value=False)
 
-# Input kolom
-input_columns = ['Gender', 'Ever_Married', 'Age', 'Graduated', 'Profession',
-                 'Work_Experience', 'Spending_Score', 'Family_Size', 'Var_1']
+# Function to load and preprocess data
+def load_data(file):
+    if file is not None:
+        try:
+            df = pd.read_csv(file)
+            return df
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
+            return None
+    return None
 
-if menu == "Upload File":
-    st.header("Prediksi dari File CSV")
-    uploaded_file = st.file_uploader("Unggah file CSV", type=["csv"])
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        if "ID" in df.columns:
-            df.drop(columns=["ID"], inplace=True)
-        pred = model.predict(df)
-        df['Predicted_Segment'] = label_encoder.inverse_transform(pred)
+# Function to preprocess data
+def preprocess_data(df, numeric_cols=None):
+    if df is None:
+        return None
+    
+    # If numeric columns not specified, use all numeric columns
+    if numeric_cols is None:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    # Handle missing values
+    df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
+    
+    # Standardize numeric columns
+    scaler = StandardScaler()
+    df[numeric_cols] = scaler.fit_transform(df[numeric_cols])
+    
+    return df, scaler
 
-        st.success("Prediksi berhasil!")
-        st.dataframe(df.head())
+# Function to train model
+def train_model(df, n_clusters, random_state):
+    if df is None:
+        return None
+    
+    # Use all numeric columns for clustering
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    X = df[numeric_cols]
+    
+    # Train KMeans model
+    model = KMeans(n_clusters=n_clusters, random_state=random_state)
+    model.fit(X)
+    
+    # Add cluster labels to dataframe
+    df['Cluster'] = model.labels_
+    
+    return model, df
 
-        # Visualisasi
-        st.subheader(" Distribusi Segmentasi yang Diprediksi")
-        fig, ax = plt.subplots()
-        sns.countplot(data=df, x='Predicted_Segment', order=sorted(df['Predicted_Segment'].unique()), ax=ax)
+# Function to visualize clusters
+def visualize_clusters(df, cluster_col='Cluster'):
+    if df is None:
+        return
+    
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if cluster_col in numeric_cols:
+        numeric_cols.remove(cluster_col)
+    
+    # Select two most important features (for demo purposes)
+    if len(numeric_cols) >= 2:
+        col1, col2 = numeric_cols[:2]
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.scatterplot(data=df, x=col1, y=col2, hue=cluster_col, palette='viridis', ax=ax)
+        ax.set_title("Customer Clusters")
         st.pyplot(fig)
+        
+        # Cluster statistics
+        st.subheader("Cluster Statistics")
+        cluster_stats = df.groupby(cluster_col)[numeric_cols].mean()
+        st.dataframe(cluster_stats.style.background_gradient(cmap='Blues'))
+        
+        # Cluster sizes
+        st.subheader("Cluster Sizes")
+        cluster_sizes = df[cluster_col].value_counts().sort_index()
+        st.bar_chart(cluster_sizes)
+    else:
+        st.warning("Not enough numeric columns for visualization")
 
-        # Unduh hasil
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("⬇️ Unduh Hasil Prediksi", csv, "prediksi_segmentasi.csv", "text/csv")
+# Main app logic
+def main():
+    # Load data
+    train_df = load_data(train_file)
+    test_df = load_data(test_file)
+    
+    if train_df is not None:
+        if show_raw_data:
+            st.subheader("Raw Training Data")
+            st.dataframe(train_df.head())
+        
+        # Preprocess data
+        numeric_cols = train_df.select_dtypes(include=[np.number]).columns.tolist()
+        train_df_processed, scaler = preprocess_data(train_df.copy(), numeric_cols)
+        
+        # Train model
+        model, clustered_df = train_model(train_df_processed, n_clusters, random_state)
+        
+        if model is not None:
+            st.success("Model trained successfully!")
+            
+            # Visualize clusters
+            st.header("Training Data Clusters")
+            visualize_clusters(clustered_df)
+            
+            # Save model if requested
+            if save_model:
+                model_data = {
+                    'model': model,
+                    'scaler': scaler,
+                    'numeric_cols': numeric_cols
+                }
+                with open('customer_segmentation_model.pkl', 'wb') as f:
+                    pickle.dump(model_data, f)
+                st.success("Model saved as 'customer_segmentation_model.pkl'")
+    
+    # Test data analysis
+    if test_df is not None:
+        if show_raw_data:
+            st.subheader("Raw Test Data")
+            st.dataframe(test_df.head())
+        
+        if 'model' in locals():
+            # Preprocess test data using same scaler
+            test_df_processed = test_df.copy()
+            test_df_processed[numeric_cols] = scaler.transform(test_df_processed[numeric_cols])
+            
+            # Predict clusters
+            test_clusters = model.predict(test_df_processed[numeric_cols])
+            test_df_processed['Cluster'] = test_clusters
+            
+            # Visualize test clusters
+            st.header("Test Data Clusters")
+            visualize_clusters(test_df_processed)
+        else:
+            st.warning("Please train a model first to analyze test data")
 
-elif menu == "Input Manual":
-    st.header("✍️ Prediksi dari Input Manual")
-
-    with st.form("manual_form"):
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            gender = st.selectbox("Gender", ["Male", "Female"])
-            ever_married = st.selectbox("Ever Married", ["Yes", "No"])
-            age = st.slider("Age", 18, 90, 30)
-        with col2:
-            graduated = st.selectbox("Graduated", ["Yes", "No"])
-            profession = st.selectbox("Profession", ["Healthcare", "Engineer", "Lawyer", "Artist", "Executive", "Doctor", "Entertainment", "Marketing"])
-            work_exp = st.number_input("Work Experience", 0.0, 30.0, step=1.0)
-        with col3:
-            spending_score = st.selectbox("Spending Score", ["Low", "Average", "High"])
-            family_size = st.number_input("Family Size", 1.0, 20.0, step=1.0)
-            var_1 = st.selectbox("Var_1", ["Cat_1", "Cat_2", "Cat_3", "Cat_4", "Cat_5", "Cat_6"])
-
-        submitted = st.form_submit_button("Predict")
-
-        if submitted:
-            input_df = pd.DataFrame([{
-                'Gender': gender,
-                'Ever_Married': ever_married,
-                'Age': age,
-                'Graduated': graduated,
-                'Profession': profession,
-                'Work_Experience': work_exp,
-                'Spending_Score': spending_score,
-                'Family_Size': family_size,
-                'Var_1': var_1
-            }])
-
-            pred = model.predict(input_df)
-            segment = label_encoder.inverse_transform(pred)[0]
-
-            st.success(f"Prediksi Segmentasi: 🧩 **{segment}**")
+if __name__ == "__main__":
+    main()
