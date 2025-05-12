@@ -3,7 +3,7 @@ import pickle
 import pandas as pd
 
 # Load the trained model
-model = pickle.load(open('customer_segmentation_model.pkl', 'rb'))
+model = pickle.load(open('customer_segmentation_model.pkl'))
 
 # Create the Streamlit app
 st.title('Customer Segmentation Predictor')
